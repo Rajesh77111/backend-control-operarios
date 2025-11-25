@@ -25,7 +25,11 @@ const registroSchema = new mongoose.Schema({
   dentroZona: Boolean,
   creadoEn: { type: Date, default: Date.now },
   fechaDia: { type: String }, // ej: "2025-11-24"
+  distancia: { type: String }, // opcional, solo informativo
+  esExtra: { type: Boolean, default: false },
+  justificacionExtra: { type: String },
 });
+
 
 // Antes de guardar, rellenamos fechaDia con YYYY-MM-DD (hora local)
 
@@ -55,7 +59,7 @@ function distanciaMetros(lat1, lng1, lat2, lng2) {
 // 4. Ruta para registrar ingreso o salida
 app.post('/api/registro', async (req, res) => {
   try {
-    const { nombreOperario, tipo, lat, lng } = req.body;
+    const { nombreOperario, tipo, lat, lng, justificacionExtra } = req.body;
 
     if (!nombreOperario || !tipo) {
       return res.status(400).json({ mensaje: 'Faltan datos obligatorios' });
@@ -63,10 +67,93 @@ app.post('/api/registro', async (req, res) => {
 
     // Validar que se envíen coordenadas
     if (lat == null || lng == null) {
-      return res.status(400).json({ 
-        mensaje: 'Se requiere ubicación GPS para registrar' 
+      return res.status(400).json({
+        mensaje: 'Se requiere ubicación GPS para registrar',
       });
     }
+
+    // === 1) Obtener la fecha del día (YYYY-MM-DD) ===
+    const ahora = new Date();
+    const año = ahora.getFullYear();
+    const mes = String(ahora.getMonth() + 1).padStart(2, '0');
+    const dia = String(ahora.getDate()).padStart(2, '0');
+    const fechaDia = `${año}-${mes}-${dia}`;
+
+    // === 2) Verificar si ya registró este tipo hoy ===
+    const yaExiste = await Registro.findOne({
+      nombreOperario,
+      tipo,
+      fechaDia,
+    });
+
+    if (yaExiste) {
+      return res.status(400).json({
+        mensaje: `Ya registraste un ${tipo} hoy (${fechaDia}) para ${nombreOperario}.`,
+      });
+    }
+
+    // Obtener coordenadas de la zona desde variables de entorno
+    const ZONA_LAT = parseFloat(process.env.ZONA_LAT);
+    const ZONA_LNG = parseFloat(process.env.ZONA_LNG);
+    const ZONA_RADIO_METROS = parseFloat(process.env.ZONA_RADIO_METROS || '35');
+
+    const distancia = distanciaMetros(lat, lng, ZONA_LAT, ZONA_LNG);
+    const dentroZona = distancia <= ZONA_RADIO_METROS;
+
+    if (!dentroZona) {
+      return res.status(403).json({
+        mensaje: `No estás dentro de la zona de trabajo autorizada. Distancia: ${distancia.toFixed(
+          0
+        )} metros (máximo: ${ZONA_RADIO_METROS}m)`,
+        dentroZona: false,
+        distancia: distancia.toFixed(0),
+      });
+    }
+
+    // === 3) Determinar si esta salida es hora extra (después de las 17:00) ===
+    let esExtra = false;
+    if (tipo === 'salida') {
+      const horaLocal = ahora.getHours(); // OJO: depende de la zona horaria del servidor
+      if (horaLocal >= 17) {
+        esExtra = true;
+
+        // Si es extra y no mandaron justificación, no dejamos guardar
+        if (!justificacionExtra || !justificacionExtra.trim()) {
+          return res.status(400).json({
+            mensaje:
+              'Esta salida registra horas extra (después de las 17:00). Debes escribir una justificación.',
+          });
+        }
+      }
+    }
+
+    // Guardamos el registro con la hora del servidor
+    const nuevoRegistro = new Registro({
+      nombreOperario,
+      tipo,
+      lat,
+      lng,
+      dentroZona,
+      distancia: distancia.toFixed(0),
+      fechaDia,
+      esExtra,
+      justificacionExtra: esExtra ? justificacionExtra : undefined,
+    });
+
+    await nuevoRegistro.save();
+
+    res.json({
+      mensaje: `Registro de ${tipo} guardado correctamente para ${nombreOperario}`,
+      dentroZona,
+      distancia: distancia.toFixed(0),
+      registro: nuevoRegistro,
+    });
+  } catch (error) {
+    console.error('Error al guardar registro:', error);
+    res.status(500).json({ mensaje: 'Error en el servidor' });
+  }
+});
+
 
     // Obtener coordenadas de la zona desde variables de entorno
     const ZONA_LAT = parseFloat(process.env.ZONA_LAT);
@@ -376,6 +463,7 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
 });
+
 
 
 
