@@ -81,7 +81,7 @@ app.post('/api/registro', async (req, res) => {
     // Obtener coordenadas de la zona desde variables de entorno
     const ZONA_LAT = parseFloat(process.env.ZONA_LAT);
     const ZONA_LNG = parseFloat(process.env.ZONA_LNG);
-    const ZONA_RADIO_METROS = parseFloat(process.env.ZONA_RADIO_METROS || '10');
+    const ZONA_RADIO_METROS = parseFloat(process.env.ZONA_RADIO_METROS || '30');
 
     // Calcular distancia
     const distancia = distanciaMetros(lat, lng, ZONA_LAT, ZONA_LNG);
@@ -386,6 +386,7 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
 });
+
 
 
 
