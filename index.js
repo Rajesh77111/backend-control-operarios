@@ -23,8 +23,21 @@ const registroSchema = new mongoose.Schema({
   lat: Number,
   lng: Number,
   dentroZona: Boolean,
-  distancia: Number, // Agregado para guardar la distancia
   creadoEn: { type: Date, default: Date.now },
+  fechaDia: { type: String }, // ej: "2025-11-24"
+});
+
+// Antes de guardar, rellenamos fechaDia con YYYY-MM-DD (hora local)
+registroSchema.pre('save', function (next) {
+  if (!this.creadoEn) {
+    this.creadoEn = new Date();
+  }
+  const d = new Date(this.creadoEn);
+  const año = d.getFullYear();
+  const mes = String(d.getMonth() + 1).padStart(2, '0');
+  const dia = String(d.getDate()).padStart(2, '0');
+  this.fechaDia = `${año}-${mes}-${dia}`;
+  next();
 });
 
 const Registro = mongoose.model('Registro', registroSchema);
@@ -112,9 +125,226 @@ app.get('/api/registros', async (req, res) => {
   const registros = await Registro.find().sort({ creadoEn: -1 }).limit(100);
   res.json(registros);
 });
+// 6. Ruta de reporte de horas por operario y rango de fechas
+app.get('/api/reporte-horas', async (req, res) => {
+  try {
+    const { operario, desde, hasta } = req.query;
+
+    if (!operario || !desde || !hasta) {
+      return res
+        .status(400)
+        .json({ mensaje: 'Debes enviar operario, desde y hasta (YYYY-MM-DD)' });
+    }
+
+    // Construimos las fechas de inicio y fin
+    const inicio = new Date(`${desde}T00:00:00`);
+    const fin = new Date(`${hasta}T23:59:59`);
+
+    // 1. Traer registros del operario en ese rango
+    const registros = await Registro.find({
+      nombreOperario: operario,
+      creadoEn: { $gte: inicio, $lte: fin },
+    }).sort({ creadoEn: 1 });
+
+    if (registros.length === 0) {
+      return res.json({
+        operario,
+        desde,
+        hasta,
+        totalHoras: 0,
+        horasNormales: 0,
+        horasExtra: 0,
+        horasDominicales: 0,
+        detalle: [],
+      });
+    }
+
+    // 2. Armar pares ingreso–salida
+    const intervalos = [];
+    let ultimoIngreso = null;
+
+    for (const reg of registros) {
+      if (reg.tipo === 'ingreso') {
+        ultimoIngreso = reg.creadoEn;
+      } else if (reg.tipo === 'salida' && ultimoIngreso) {
+        // Creamos intervalo [ingreso, salida]
+        intervalos.push({
+          inicio: new Date(ultimoIngreso),
+          fin: new Date(reg.creadoEn),
+        });
+        ultimoIngreso = null;
+      }
+    }
+
+    // 3. Funciones auxiliares para calcular horas en bloques
+    function horasEntre(fechaInicio, fechaFin) {
+      const ms = fechaFin - fechaInicio;
+      return ms > 0 ? ms / (1000 * 60 * 60) : 0;
+    }
+
+    function mismoDia(d) {
+      const año = d.getFullYear();
+      const mes = String(d.getMonth() + 1).padStart(2, '0');
+      const dia = String(d.getDate()).padStart(2, '0');
+      return `${año}-${mes}-${dia}`;
+    }
+
+    function esDomingo(d) {
+      // 0 = domingo, 1 = lunes, ... 6 = sábado
+      return d.getDay() === 0;
+    }
+
+    // Dado un intervalo, lo partimos por día y calculamos horas
+    let horasNormales = 0;
+    let horasExtra = 0;
+    let horasDominicales = 0;
+    const detalle = [];
+
+    for (const intervalo of intervalos) {
+      let actual = new Date(intervalo.inicio);
+
+      while (actual < intervalo.fin) {
+        // Tomamos el día de este "trozo"
+        const inicioDia = new Date(
+          actual.getFullYear(),
+          actual.getMonth(),
+          actual.getDate(),
+          0,
+          0,
+          0
+        );
+        const finDia = new Date(
+          actual.getFullYear(),
+          actual.getMonth(),
+          actual.getDate(),
+          23,
+          59,
+          59
+        );
+
+        const inicioSegmento = new Date(Math.max(actual, inicioDia));
+        const finSegmento = new Date(Math.min(intervalo.fin, finDia));
+
+        const fechaTexto = mismoDia(inicioSegmento);
+        const domingo = esDomingo(inicioSegmento);
+
+        // Definir bloques de ese día
+        const bloqueManianaInicio = new Date(
+          inicioSegmento.getFullYear(),
+          inicioSegmento.getMonth(),
+          inicioSegmento.getDate(),
+          7,
+          0,
+          0
+        );
+        const bloqueManianaFin = new Date(
+          inicioSegmento.getFullYear(),
+          inicioSegmento.getMonth(),
+          inicioSegmento.getDate(),
+          12,
+          0,
+          0
+        );
+
+        const bloqueTardeInicio = new Date(
+          inicioSegmento.getFullYear(),
+          inicioSegmento.getMonth(),
+          inicioSegmento.getDate(),
+          14,
+          0,
+          0
+        );
+        const bloqueTardeFin = new Date(
+          inicioSegmento.getFullYear(),
+          inicioSegmento.getMonth(),
+          inicioSegmento.getDate(),
+          17,
+          0,
+          0
+        );
+
+        const bloqueExtraInicio = new Date(
+          inicioSegmento.getFullYear(),
+          inicioSegmento.getMonth(),
+          inicioSegmento.getDate(),
+          17,
+          0,
+          0
+        );
+        const bloqueExtraFin = finDia; // todo lo que pase de las 17:00
+
+        // Intersecciones con cada bloque
+        function interseccion(inicioBloque, finBloque) {
+          const ini = new Date(Math.max(inicioSegmento, inicioBloque));
+          const fin = new Date(Math.min(finSegmento, finBloque));
+          if (fin <= ini) return 0;
+          return horasEntre(ini, fin);
+        }
+
+        const horasManiana = interseccion(
+          bloqueManianaInicio,
+          bloqueManianaFin
+        );
+        const horasTarde = interseccion(bloqueTardeInicio, bloqueTardeFin);
+        const horasExtraDia = interseccion(bloqueExtraInicio, bloqueExtraFin);
+
+        let horasNormalesDia = horasManiana + horasTarde;
+
+        if (domingo) {
+          // Todo lo normal de ese día se considera dominical
+          horasDominicales += horasNormalesDia + horasExtraDia;
+          detalle.push({
+            fecha: fechaTexto,
+            domingo: true,
+            horasNormalesDia,
+            horasExtraDia,
+            horasDominicalesDia: horasNormalesDia + horasExtraDia,
+          });
+        } else {
+          horasNormales += horasNormalesDia;
+          horasExtra += horasExtraDia;
+          detalle.push({
+            fecha: fechaTexto,
+            domingo: false,
+            horasNormalesDia,
+            horasExtraDia,
+            horasDominicalesDia: 0,
+          });
+        }
+
+        // Avanzamos al siguiente día
+        actual = new Date(
+          inicioSegmento.getFullYear(),
+          inicioSegmento.getMonth(),
+          inicioSegmento.getDate() + 1,
+          0,
+          0,
+          0
+        );
+      }
+    }
+
+    const totalHoras = horasNormales + horasExtra + horasDominicales;
+
+    res.json({
+      operario,
+      desde,
+      hasta,
+      totalHoras: Number(totalHoras.toFixed(2)),
+      horasNormales: Number(horasNormales.toFixed(2)),
+      horasExtra: Number(horasExtra.toFixed(2)),
+      horasDominicales: Number(horasDominicales.toFixed(2)),
+      detalle,
+    });
+  } catch (error) {
+    console.error('Error en /api/reporte-horas:', error);
+    res.status(500).json({ mensaje: 'Error al generar el reporte' });
+  }
+});
 
 // 6. Iniciar el servidor
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
 });
+
