@@ -28,16 +28,7 @@ const registroSchema = new mongoose.Schema({
 });
 
 // Antes de guardar, rellenamos fechaDia con YYYY-MM-DD (hora local)
-registroSchema.pre('save', function (next) {
-  if (!this.creadoEn) {
-    this.creadoEn = new Date();
-  }
-  const d = new Date(this.creadoEn);
-  const año = d.getFullYear();
-  const mes = String(d.getMonth() + 1).padStart(2, '0');
-  const dia = String(d.getDate()).padStart(2, '0');
-  this.fechaDia = `${año}-${mes}-${dia}`;
-  next();
+
 });
 
 const Registro = mongoose.model('Registro', registroSchema);
@@ -386,6 +377,7 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
 });
+
 
 
 
