@@ -29,7 +29,6 @@ const registroSchema = new mongoose.Schema({
 
 // Antes de guardar, rellenamos fechaDia con YYYY-MM-DD (hora local)
 
-});
 
 const Registro = mongoose.model('Registro', registroSchema);
 
@@ -377,6 +376,7 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
 });
+
 
 
 
