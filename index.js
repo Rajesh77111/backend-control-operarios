@@ -125,6 +125,45 @@ app.get('/api/registros', async (req, res) => {
   const registros = await Registro.find().sort({ creadoEn: -1 }).limit(100);
   res.json(registros);
 });
+// 6. Eliminar registros por operario y rango de fechas
+app.delete('/api/registros-rango', async (req, res) => {
+  try {
+    const { operario, desde, hasta } = req.body;
+
+    // Validar que llegaron los datos básicos
+    if (!operario || !desde || !hasta) {
+      return res
+        .status(400)
+        .json({ mensaje: 'Debes enviar operario, desde y hasta (YYYY-MM-DD)' });
+    }
+
+    // Construir los límites de fecha
+    // Ej: desde = "2025-11-01", hasta = "2025-11-07"
+    const inicio = new Date(`${desde}T00:00:00`);
+    const fin = new Date(`${hasta}T23:59:59`);
+
+    // Filtro: nombre + rango de fechas usando el campo creadoEn
+    const filtro = {
+      nombreOperario: operario,
+      creadoEn: { $gte: inicio, $lte: fin },
+    };
+
+    // deleteMany devuelve cuántos documentos borró
+    const resultado = await Registro.deleteMany(filtro);
+
+    res.json({
+      mensaje: 'Registros eliminados correctamente',
+      operario,
+      desde,
+      hasta,
+      eliminados: resultado.deletedCount,
+    });
+  } catch (error) {
+    console.error('Error al eliminar registros por rango:', error);
+    res.status(500).json({ mensaje: 'Error al eliminar registros' });
+  }
+});
+
 // 6. Ruta de reporte de horas por operario y rango de fechas
 app.get('/api/reporte-horas', async (req, res) => {
   try {
@@ -347,4 +386,5 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
 });
+
 
