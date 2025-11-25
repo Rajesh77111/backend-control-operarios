@@ -23,6 +23,7 @@ const registroSchema = new mongoose.Schema({
   lat: Number,
   lng: Number,
   dentroZona: Boolean,
+  distancia: Number, // Agregado para guardar la distancia
   creadoEn: { type: Date, default: Date.now },
 });
 
@@ -57,28 +58,30 @@ app.post('/api/registro', async (req, res) => {
       return res.status(400).json({ mensaje: 'Faltan datos obligatorios' });
     }
 
-    // Si no hay coordenadas, marcamos que está fuera de la zona
-    let dentroZona = false;
-    let distancia = null;
-
-    if (lat != null && lng != null) {
-      const ZONA_LAT = parseFloat(process.env.ZONA_LAT);
-      const ZONA_LNG = parseFloat(process.env.ZONA_LNG);
-      const ZONA_RADIO_METROS = parseFloat(process.env.ZONA_RADIO_METROS || '200'); // 200m por defecto
-
-      distancia = distanciaMetros(lat, lng, ZONA_LAT, ZONA_LNG);
-      dentroZona = distancia <= ZONA_RADIO_METROS;
-    }
-
-    // Si quieres bloquear registros fuera de la planta, descomenta esto:
-    
-    if (!dentroZona) {
-      return res.status(403).json({
-        mensaje: 'No estás dentro de la zona de trabajo autorizada',
-        distancia,
+    // Validar que se envíen coordenadas
+    if (lat == null || lng == null) {
+      return res.status(400).json({ 
+        mensaje: 'Se requiere ubicación GPS para registrar' 
       });
     }
-    
+
+    // Obtener coordenadas de la zona desde variables de entorno
+    const ZONA_LAT = parseFloat(process.env.ZONA_LAT);
+    const ZONA_LNG = parseFloat(process.env.ZONA_LNG);
+    const ZONA_RADIO_METROS = parseFloat(process.env.ZONA_RADIO_METROS || '200');
+
+    // Calcular distancia
+    const distancia = distanciaMetros(lat, lng, ZONA_LAT, ZONA_LNG);
+    const dentroZona = distancia <= ZONA_RADIO_METROS;
+
+    // ⚠️ VALIDACIÓN ACTIVADA: Bloquear registros fuera de la planta
+    if (!dentroZona) {
+      return res.status(403).json({
+        mensaje: `No estás dentro de la zona de trabajo autorizada. Distancia: ${distancia.toFixed(0)} metros (máximo: ${ZONA_RADIO_METROS}m)`,
+        dentroZona: false,
+        distancia: distancia.toFixed(0),
+      });
+    }
 
     // Guardamos el registro con la hora del servidor
     const nuevoRegistro = new Registro({
@@ -87,14 +90,15 @@ app.post('/api/registro', async (req, res) => {
       lat,
       lng,
       dentroZona,
+      distancia: distancia.toFixed(0),
     });
 
     await nuevoRegistro.save();
 
     res.json({
-      mensaje: 'Registro guardado correctamente',
+      mensaje: `Registro de ${tipo} guardado correctamente para ${nombreOperario}`,
       dentroZona,
-      distancia,
+      distancia: distancia.toFixed(0),
       registro: nuevoRegistro,
     });
   } catch (error) {
@@ -114,4 +118,3 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
 });
-
