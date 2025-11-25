@@ -71,14 +71,14 @@ app.post('/api/registro', async (req, res) => {
     }
 
     // Si quieres bloquear registros fuera de la planta, descomenta esto:
-    /*
+    
     if (!dentroZona) {
       return res.status(403).json({
         mensaje: 'No estás dentro de la zona de trabajo autorizada',
         distancia,
       });
     }
-    */
+    
 
     // Guardamos el registro con la hora del servidor
     const nuevoRegistro = new Registro({
@@ -114,3 +114,4 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
 });
+
