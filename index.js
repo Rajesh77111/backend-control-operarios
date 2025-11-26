@@ -1,4 +1,4 @@
-// index.js
+// index.js - Backend con soporte para PTAP y PTAR
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -6,35 +6,39 @@ require('dotenv').config();
 
 const app = express();
 
-// Middleware
 app.use(express.json());
 app.use(cors());
 
-// 1. Conexión a MongoDB Atlas
+// Conexión a MongoDB
 mongoose
   .connect(process.env.MONGODB_URI)
   .then(() => console.log('✅ Conectado a MongoDB Atlas'))
   .catch((err) => console.error('❌ Error al conectar a MongoDB:', err));
 
-// 2. Schema de Registro (con justificación de horas extra)
+// ==================== SCHEMAS ====================
+
+// Schema de Registro (ahora incluye planta)
 const registroSchema = new mongoose.Schema({
   nombreOperario: { type: String, required: true },
+  planta: { type: String, enum: ['PTAP', 'PTAR'], required: true },
   tipo: { type: String, enum: ['ingreso', 'salida'], required: true },
   lat: Number,
   lng: Number,
   dentroZona: Boolean,
   creadoEn: { type: Date, default: Date.now },
-  fechaDia: { type: String }, // "2025-11-24"
+  fechaDia: { type: String }, // "2025-11-26"
   distancia: { type: String },
-  justificacionExtra: { type: String }, // Nueva: justificación de horas extra
+  justificacionExtra: { type: String },
+  turno: { type: String }, // Para PTAR: "mañana", "tarde", "noche"
 });
 
 const Registro = mongoose.model('Registro', registroSchema);
 
-// 3. Schema de Permisos (NUEVO)
+// Schema de Permisos
 const permisoSchema = new mongoose.Schema({
   nombreOperario: { type: String, required: true },
-  fechaPermiso: { type: String, required: true }, // "2025-11-24"
+  planta: { type: String, enum: ['PTAP', 'PTAR'], required: true },
+  fechaPermiso: { type: String, required: true },
   horasPermiso: { type: Number, required: true },
   motivo: { type: String, required: true },
   creadoEn: { type: Date, default: Date.now },
@@ -42,7 +46,23 @@ const permisoSchema = new mongoose.Schema({
 
 const Permiso = mongoose.model('Permiso', permisoSchema);
 
-// 4. Función de distancia
+// ==================== CONFIGURACIÓN DE PLANTAS ====================
+
+const PLANTAS_CONFIG = {
+  PTAP: {
+    lat: parseFloat(process.env.PTAP_LAT || '3.17253'),
+    lng: parseFloat(process.env.PTAP_LNG || '-76.4588'),
+    radio: parseFloat(process.env.PTAP_RADIO || '35'),
+  },
+  PTAR: {
+    lat: parseFloat(process.env.PTAR_LAT || '3.17300'),
+    lng: parseFloat(process.env.PTAR_LNG || '-76.4600'),
+    radio: parseFloat(process.env.PTAR_RADIO || '50'),
+  }
+};
+
+// ==================== FUNCIONES AUXILIARES ====================
+
 function distanciaMetros(lat1, lng1, lat2, lng2) {
   const R = 6371000;
   const toRad = (grado) => (grado * Math.PI) / 180;
@@ -50,83 +70,120 @@ function distanciaMetros(lat1, lng1, lat2, lng2) {
   const dLng = toRad(lng2 - lng1);
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRad(lat1)) *
-      Math.cos(toRad(lat2)) *
-      Math.sin(dLng / 2) *
-      Math.sin(dLng / 2);
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+    Math.sin(dLng / 2) * Math.sin(dLng / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
 
-// 5. Ruta para registrar ingreso o salida (MEJORADA)
+function obtenerFechaDia(fecha) {
+  const año = fecha.getFullYear();
+  const mes = String(fecha.getMonth() + 1).padStart(2, '0');
+  const dia = String(fecha.getDate()).padStart(2, '0');
+  return `${año}-${mes}-${dia}`;
+}
+
+function determinarTurno(hora) {
+  // Turnos PTAR: 6-14 (mañana), 14-22 (tarde), 22-6 (noche)
+  if (hora >= 6 && hora < 14) return 'mañana';
+  if (hora >= 14 && hora < 22) return 'tarde';
+  return 'noche';
+}
+
+// Obtener inicio y fin de semana (lunes a domingo)
+function obtenerSemana(fecha) {
+  const dia = new Date(fecha);
+  const diaSemana = dia.getDay(); // 0=domingo, 1=lunes, etc.
+  const diff = diaSemana === 0 ? -6 : 1 - diaSemana; // Ajustar para que lunes sea inicio
+  
+  const inicioSemana = new Date(dia);
+  inicioSemana.setDate(dia.getDate() + diff);
+  inicioSemana.setHours(0, 0, 0, 0);
+  
+  const finSemana = new Date(inicioSemana);
+  finSemana.setDate(inicioSemana.getDate() + 6);
+  finSemana.setHours(23, 59, 59, 999);
+  
+  return { inicio: inicioSemana, fin: finSemana };
+}
+
+// ==================== RUTAS ====================
+
+// Obtener configuración de planta
+app.get('/api/config-planta/:planta', (req, res) => {
+  const { planta } = req.params;
+  const config = PLANTAS_CONFIG[planta];
+  
+  if (!config) {
+    return res.status(404).json({ mensaje: 'Planta no encontrada' });
+  }
+  
+  res.json(config);
+});
+
+// Registrar ingreso/salida
 app.post('/api/registro', async (req, res) => {
   try {
-    const { nombreOperario, tipo, lat, lng, justificacionExtra } = req.body;
+    const { nombreOperario, planta, tipo, lat, lng, justificacionExtra } = req.body;
 
-    if (!nombreOperario || !tipo) {
+    if (!nombreOperario || !planta || !tipo) {
       return res.status(400).json({ mensaje: 'Faltan datos obligatorios' });
     }
 
-    if (lat == null || lng == null) {
-      return res.status(400).json({
-        mensaje: 'Se requiere ubicación GPS para registrar',
-      });
+    if (!['PTAP', 'PTAR'].includes(planta)) {
+      return res.status(400).json({ mensaje: 'Planta inválida' });
     }
 
-    // Fecha del día
-    const ahora = new Date();
-    const año = ahora.getFullYear();
-    const mes = String(ahora.getMonth() + 1).padStart(2, '0');
-    const dia = String(ahora.getDate()).padStart(2, '0');
-    const fechaDia = `${año}-${mes}-${dia}`;
+    if (lat == null || lng == null) {
+      return res.status(400).json({ mensaje: 'Se requiere ubicación GPS' });
+    }
 
-    // ⚠️ VALIDACIÓN: Solo un registro de cada tipo por día
+    const ahora = new Date();
+    const fechaDia = obtenerFechaDia(ahora);
+
+    // Validar un solo registro por tipo por día
     const yaExiste = await Registro.findOne({
       nombreOperario,
+      planta,
       tipo,
       fechaDia,
     });
 
     if (yaExiste) {
       return res.status(400).json({
-        mensaje: `Ya registraste un ${tipo} hoy (${fechaDia}). Solo puedes registrar ${tipo} una vez por día.`,
+        mensaje: `Ya registraste un ${tipo} hoy para ${planta}`,
       });
     }
 
-    // Validar zona
-    const ZONA_LAT = parseFloat(process.env.ZONA_LAT);
-    const ZONA_LNG = parseFloat(process.env.ZONA_LNG);
-    const ZONA_RADIO_METROS = parseFloat(process.env.ZONA_RADIO_METROS || '35');
-
-    const distancia = distanciaMetros(lat, lng, ZONA_LAT, ZONA_LNG);
-    const dentroZona = distancia <= ZONA_RADIO_METROS;
+    // Validar geocerca
+    const config = PLANTAS_CONFIG[planta];
+    const distancia = distanciaMetros(lat, lng, config.lat, config.lng);
+    const dentroZona = distancia <= config.radio;
 
     if (!dentroZona) {
       return res.status(403).json({
-        mensaje: `No estás dentro de la zona de trabajo autorizada. Distancia: ${distancia.toFixed(
-          0
-        )} metros (máximo: ${ZONA_RADIO_METROS}m)`,
+        mensaje: `No estás en la zona de ${planta}. Distancia: ${distancia.toFixed(0)}m (máximo: ${config.radio}m)`,
         dentroZona: false,
         distancia: distancia.toFixed(0),
       });
     }
 
-    // ⚠️ VALIDACIÓN: Si es salida después de las 17:00, exigir justificación
-    if (tipo === 'salida') {
-      const horaLocal = ahora.getHours();
-      if (horaLocal >= 17) {
-        if (!justificacionExtra || !justificacionExtra.trim()) {
-          return res.status(400).json({
-            mensaje:
-              'Esta salida registra horas extra (después de las 17:00). Debes escribir una justificación.',
-          });
-        }
+    // Validar justificación para PTAP (después de las 17:00)
+    if (planta === 'PTAP' && tipo === 'salida') {
+      const hora = ahora.getHours();
+      if (hora >= 17 && (!justificacionExtra || !justificacionExtra.trim())) {
+        return res.status(400).json({
+          mensaje: 'Salida después de las 17:00 requiere justificación',
+        });
       }
     }
 
-    // Guardar registro
+    // Determinar turno para PTAR
+    const turno = planta === 'PTAR' ? determinarTurno(ahora.getHours()) : null;
+
     const nuevoRegistro = new Registro({
       nombreOperario,
+      planta,
       tipo,
       lat,
       lng,
@@ -134,14 +191,16 @@ app.post('/api/registro', async (req, res) => {
       distancia: distancia.toFixed(0),
       fechaDia,
       justificacionExtra: justificacionExtra || undefined,
+      turno,
     });
 
     await nuevoRegistro.save();
 
     res.json({
-      mensaje: `Registro de ${tipo} guardado correctamente para ${nombreOperario}`,
+      mensaje: `Registro de ${tipo} guardado para ${planta}`,
       dentroZona,
       distancia: distancia.toFixed(0),
+      turno,
       registro: nuevoRegistro,
     });
   } catch (error) {
@@ -150,277 +209,309 @@ app.post('/api/registro', async (req, res) => {
   }
 });
 
-// 6. Ver registros
+// Ver registros
 app.get('/api/registros', async (req, res) => {
-  const registros = await Registro.find().sort({ creadoEn: -1 }).limit(100);
+  const { planta } = req.query;
+  const filtro = planta ? { planta } : {};
+  const registros = await Registro.find(filtro).sort({ creadoEn: -1 }).limit(100);
   res.json(registros);
 });
 
-// 7. Eliminar registros por rango
+// Eliminar registros por rango
 app.delete('/api/registros-rango', async (req, res) => {
   try {
-    const { operario, desde, hasta } = req.body;
+    const { operario, planta, desde, hasta } = req.body;
 
-    if (!operario || !desde || !hasta) {
-      return res
-        .status(400)
-        .json({ mensaje: 'Debes enviar operario, desde y hasta (YYYY-MM-DD)' });
+    if (!operario || !planta || !desde || !hasta) {
+      return res.status(400).json({ mensaje: 'Datos incompletos' });
     }
 
     const inicio = new Date(`${desde}T00:00:00`);
     const fin = new Date(`${hasta}T23:59:59`);
 
-    const filtro = {
+    const resultado = await Registro.deleteMany({
       nombreOperario: operario,
+      planta,
       creadoEn: { $gte: inicio, $lte: fin },
-    };
-
-    const resultado = await Registro.deleteMany(filtro);
+    });
 
     res.json({
-      mensaje: 'Registros eliminados correctamente',
-      operario,
-      desde,
-      hasta,
+      mensaje: 'Registros eliminados',
       eliminados: resultado.deletedCount,
     });
   } catch (error) {
-    console.error('Error al eliminar registros por rango:', error);
-    res.status(500).json({ mensaje: 'Error al eliminar registros' });
+    console.error('Error al eliminar:', error);
+    res.status(500).json({ mensaje: 'Error al eliminar' });
   }
 });
 
-// 8. Reporte de horas con descuento de permisos (MEJORADO)
+// ==================== REPORTE DE HORAS ====================
+
 app.get('/api/reporte-horas', async (req, res) => {
   try {
-    const { operario, desde, hasta } = req.query;
+    const { operario, planta, desde, hasta } = req.query;
 
-    if (!operario || !desde || !hasta) {
-      return res
-        .status(400)
-        .json({ mensaje: 'Debes enviar operario, desde y hasta (YYYY-MM-DD)' });
+    if (!operario || !planta || !desde || !hasta) {
+      return res.status(400).json({ mensaje: 'Datos incompletos' });
     }
 
     const inicio = new Date(`${desde}T00:00:00`);
     const fin = new Date(`${hasta}T23:59:59`);
 
-    // 1. Traer registros
+    // Traer registros y permisos
     const registros = await Registro.find({
       nombreOperario: operario,
+      planta,
       creadoEn: { $gte: inicio, $lte: fin },
     }).sort({ creadoEn: 1 });
 
-    // 2. Traer permisos en el mismo rango
     const permisos = await Permiso.find({
       nombreOperario: operario,
+      planta,
       fechaPermiso: { $gte: desde, $lte: hasta },
     });
 
     const totalHorasPermiso = permisos.reduce((sum, p) => sum + p.horasPermiso, 0);
 
-    if (registros.length === 0) {
-      return res.json({
-        operario,
-        desde,
-        hasta,
-        totalHoras: 0,
-        horasNormales: 0,
-        horasExtra: 0,
-        horasDominicales: 0,
-        horasPermiso: totalHorasPermiso,
-        detalle: [],
-      });
+    if (planta === 'PTAP') {
+      return calcularHorasPTAP(operario, desde, hasta, registros, totalHorasPermiso, res);
+    } else {
+      return calcularHorasPTAR(operario, desde, hasta, registros, totalHorasPermiso, res);
     }
-
-    // 3. Armar intervalos ingreso-salida
-    const intervalos = [];
-    let ultimoIngreso = null;
-
-    for (const reg of registros) {
-      if (reg.tipo === 'ingreso') {
-        ultimoIngreso = reg.creadoEn;
-      } else if (reg.tipo === 'salida' && ultimoIngreso) {
-        intervalos.push({
-          inicio: new Date(ultimoIngreso),
-          fin: new Date(reg.creadoEn),
-        });
-        ultimoIngreso = null;
-      }
-    }
-
-    // 4. Calcular horas por bloques
-    function horasEntre(fechaInicio, fechaFin) {
-      const ms = fechaFin - fechaInicio;
-      return ms > 0 ? ms / (1000 * 60 * 60) : 0;
-    }
-
-    function mismoDia(d) {
-      const año = d.getFullYear();
-      const mes = String(d.getMonth() + 1).padStart(2, '0');
-      const dia = String(d.getDate()).padStart(2, '0');
-      return `${año}-${mes}-${dia}`;
-    }
-
-    function esDomingo(d) {
-      return d.getDay() === 0;
-    }
-
-    let horasNormales = 0;
-    let horasExtra = 0;
-    let horasDominicales = 0;
-    const detalle = [];
-
-    for (const intervalo of intervalos) {
-      let actual = new Date(intervalo.inicio);
-
-      while (actual < intervalo.fin) {
-        const inicioDia = new Date(
-          actual.getFullYear(),
-          actual.getMonth(),
-          actual.getDate(),
-          0,
-          0,
-          0
-        );
-        const finDia = new Date(
-          actual.getFullYear(),
-          actual.getMonth(),
-          actual.getDate(),
-          23,
-          59,
-          59
-        );
-
-        const inicioSegmento = new Date(Math.max(actual, inicioDia));
-        const finSegmento = new Date(Math.min(intervalo.fin, finDia));
-
-        const fechaTexto = mismoDia(inicioSegmento);
-        const domingo = esDomingo(inicioSegmento);
-
-        // Bloques
-        const bloqueManianaInicio = new Date(
-          inicioSegmento.getFullYear(),
-          inicioSegmento.getMonth(),
-          inicioSegmento.getDate(),
-          7,
-          0,
-          0
-        );
-        const bloqueManianaFin = new Date(
-          inicioSegmento.getFullYear(),
-          inicioSegmento.getMonth(),
-          inicioSegmento.getDate(),
-          12,
-          0,
-          0
-        );
-
-        const bloqueTardeInicio = new Date(
-          inicioSegmento.getFullYear(),
-          inicioSegmento.getMonth(),
-          inicioSegmento.getDate(),
-          14,
-          0,
-          0
-        );
-        const bloqueTardeFin = new Date(
-          inicioSegmento.getFullYear(),
-          inicioSegmento.getMonth(),
-          inicioSegmento.getDate(),
-          17,
-          0,
-          0
-        );
-
-        const bloqueExtraInicio = new Date(
-          inicioSegmento.getFullYear(),
-          inicioSegmento.getMonth(),
-          inicioSegmento.getDate(),
-          17,
-          0,
-          0
-        );
-        const bloqueExtraFin = finDia;
-
-        function interseccion(inicioBloque, finBloque) {
-          const ini = new Date(Math.max(inicioSegmento, inicioBloque));
-          const fin = new Date(Math.min(finSegmento, finBloque));
-          if (fin <= ini) return 0;
-          return horasEntre(ini, fin);
-        }
-
-        const horasManiana = interseccion(bloqueManianaInicio, bloqueManianaFin);
-        const horasTarde = interseccion(bloqueTardeInicio, bloqueTardeFin);
-        const horasExtraDia = interseccion(bloqueExtraInicio, bloqueExtraFin);
-
-        let horasNormalesDia = horasManiana + horasTarde;
-
-        if (domingo) {
-          horasDominicales += horasNormalesDia + horasExtraDia;
-          detalle.push({
-            fecha: fechaTexto,
-            domingo: true,
-            horasNormalesDia,
-            horasExtraDia,
-            horasDominicalesDia: horasNormalesDia + horasExtraDia,
-          });
-        } else {
-          horasNormales += horasNormalesDia;
-          horasExtra += horasExtraDia;
-          detalle.push({
-            fecha: fechaTexto,
-            domingo: false,
-            horasNormalesDia,
-            horasExtraDia,
-            horasDominicalesDia: 0,
-          });
-        }
-
-        actual = new Date(
-          inicioSegmento.getFullYear(),
-          inicioSegmento.getMonth(),
-          inicioSegmento.getDate() + 1,
-          0,
-          0,
-          0
-        );
-      }
-    }
-
-    const totalHoras = horasNormales + horasExtra + horasDominicales;
-
-    res.json({
-      operario,
-      desde,
-      hasta,
-      totalHoras: Number(totalHoras.toFixed(2)),
-      horasNormales: Number(horasNormales.toFixed(2)),
-      horasExtra: Number(horasExtra.toFixed(2)),
-      horasDominicales: Number(horasDominicales.toFixed(2)),
-      horasPermiso: Number(totalHorasPermiso.toFixed(2)),
-      detalle,
-    });
   } catch (error) {
-    console.error('Error en /api/reporte-horas:', error);
-    res.status(500).json({ mensaje: 'Error al generar el reporte' });
+    console.error('Error en reporte:', error);
+    res.status(500).json({ mensaje: 'Error al generar reporte' });
   }
 });
 
-// ========== NUEVAS RUTAS PARA PERMISOS ==========
+// Función para calcular horas PTAP (lógica existente)
+function calcularHorasPTAP(operario, desde, hasta, registros, totalHorasPermiso, res) {
+  const intervalos = [];
+  let ultimoIngreso = null;
 
-// 9. Crear permiso
+  for (const reg of registros) {
+    if (reg.tipo === 'ingreso') {
+      ultimoIngreso = reg.creadoEn;
+    } else if (reg.tipo === 'salida' && ultimoIngreso) {
+      intervalos.push({
+        inicio: new Date(ultimoIngreso),
+        fin: new Date(reg.creadoEn),
+      });
+      ultimoIngreso = null;
+    }
+  }
+
+  function horasEntre(fechaInicio, fechaFin) {
+    const ms = fechaFin - fechaInicio;
+    return ms > 0 ? ms / (1000 * 60 * 60) : 0;
+  }
+
+  function esDomingo(d) {
+    return d.getDay() === 0;
+  }
+
+  let horasNormales = 0;
+  let horasExtra = 0;
+  let horasDominicales = 0;
+  const detalle = [];
+
+  for (const intervalo of intervalos) {
+    let actual = new Date(intervalo.inicio);
+
+    while (actual < intervalo.fin) {
+      const inicioDia = new Date(actual.getFullYear(), actual.getMonth(), actual.getDate(), 0, 0, 0);
+      const finDia = new Date(actual.getFullYear(), actual.getMonth(), actual.getDate(), 23, 59, 59);
+
+      const inicioSegmento = new Date(Math.max(actual, inicioDia));
+      const finSegmento = new Date(Math.min(intervalo.fin, finDia));
+
+      const fechaTexto = obtenerFechaDia(inicioSegmento);
+      const domingo = esDomingo(inicioSegmento);
+
+      const bloqueManianaInicio = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate(), 7, 0, 0);
+      const bloqueManianaFin = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate(), 12, 0, 0);
+      const bloqueTardeInicio = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate(), 14, 0, 0);
+      const bloqueTardeFin = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate(), 17, 0, 0);
+      const bloqueExtraInicio = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate(), 17, 0, 0);
+
+      function interseccion(inicioBloque, finBloque) {
+        const ini = new Date(Math.max(inicioSegmento, inicioBloque));
+        const fin = new Date(Math.min(finSegmento, finBloque));
+        if (fin <= ini) return 0;
+        return horasEntre(ini, fin);
+      }
+
+      const horasManiana = interseccion(bloqueManianaInicio, bloqueManianaFin);
+      const horasTarde = interseccion(bloqueTardeInicio, bloqueTardeFin);
+      const horasExtraDia = interseccion(bloqueExtraInicio, finDia);
+
+      let horasNormalesDia = horasManiana + horasTarde;
+
+      if (domingo) {
+        horasDominicales += horasNormalesDia + horasExtraDia;
+        detalle.push({
+          fecha: fechaTexto,
+          domingo: true,
+          horasNormalesDia,
+          horasExtraDia,
+          horasDominicalesDia: horasNormalesDia + horasExtraDia,
+          horasNocturnas: 0,
+        });
+      } else {
+        horasNormales += horasNormalesDia;
+        horasExtra += horasExtraDia;
+        detalle.push({
+          fecha: fechaTexto,
+          domingo: false,
+          horasNormalesDia,
+          horasExtraDia,
+          horasDominicalesDia: 0,
+          horasNocturnas: 0,
+        });
+      }
+
+      actual = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate() + 1, 0, 0, 0);
+    }
+  }
+
+  const totalHoras = horasNormales + horasExtra + horasDominicales;
+
+  res.json({
+    operario,
+    planta: 'PTAP',
+    desde,
+    hasta,
+    totalHoras: Number(totalHoras.toFixed(2)),
+    horasNormales: Number(horasNormales.toFixed(2)),
+    horasExtra: Number(horasExtra.toFixed(2)),
+    horasDominicales: Number(horasDominicales.toFixed(2)),
+    horasNocturnas: 0,
+    horasPermiso: Number(totalHorasPermiso.toFixed(2)),
+    detalle,
+  });
+}
+
+// Función para calcular horas PTAR (nueva lógica)
+function calcularHorasPTAR(operario, desde, hasta, registros, totalHorasPermiso, res) {
+  const intervalos = [];
+  let ultimoIngreso = null;
+
+  for (const reg of registros) {
+    if (reg.tipo === 'ingreso') {
+      ultimoIngreso = reg.creadoEn;
+    } else if (reg.tipo === 'salida' && ultimoIngreso) {
+      intervalos.push({
+        inicio: new Date(ultimoIngreso),
+        fin: new Date(reg.creadoEn),
+      });
+      ultimoIngreso = null;
+    }
+  }
+
+  // Calcular horas por semana y por día
+  const semanas = {};
+  const detalleDias = [];
+
+  for (const intervalo of intervalos) {
+    let actual = new Date(intervalo.inicio);
+
+    while (actual < intervalo.fin) {
+      const inicioDia = new Date(actual.getFullYear(), actual.getMonth(), actual.getDate(), 0, 0, 0);
+      const finDia = new Date(actual.getFullYear(), actual.getMonth(), actual.getDate(), 23, 59, 59);
+
+      const inicioSegmento = new Date(Math.max(actual, inicioDia));
+      const finSegmento = new Date(Math.min(intervalo.fin, finDia));
+
+      const horasDelDia = (finSegmento - inicioSegmento) / (1000 * 60 * 60);
+
+      // Calcular horas nocturnas (19:00 - 06:00)
+      const inicio19h = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate(), 19, 0, 0);
+      const fin6hSiguiente = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate() + 1, 6, 0, 0);
+
+      let horasNocturnas = 0;
+      
+      // Si el segmento cruza las 19:00
+      if (finSegmento > inicio19h && inicioSegmento < fin6hSiguiente) {
+        const inicioNocturno = new Date(Math.max(inicioSegmento, inicio19h));
+        const finNocturno = new Date(Math.min(finSegmento, fin6hSiguiente));
+        horasNocturnas = Math.max(0, (finNocturno - inicioNocturno) / (1000 * 60 * 60));
+      }
+
+      const fechaTexto = obtenerFechaDia(inicioSegmento);
+      const semana = obtenerSemana(inicioSegmento);
+      const claveSemanaSemana = `${obtenerFechaDia(semana.inicio)}_${obtenerFechaDia(semana.fin)}`;
+
+      if (!semanas[claveSemana]) {
+        semanas[claveSemana] = {
+          inicio: obtenerFechaDia(semana.inicio),
+          fin: obtenerFechaDia(semana.fin),
+          horasTotales: 0,
+          horasNormales: 0,
+          horasExtra: 0,
+          horasNocturnas: 0,
+        };
+      }
+
+      semanas[claveSemana].horasTotales += horasDelDia;
+      semanas[claveSemana].horasNocturnas += horasNocturnas;
+
+      detalleDias.push({
+        fecha: fechaTexto,
+        horas: horasDelDia,
+        horasNocturnas,
+        semana: claveSemana,
+      });
+
+      actual = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate() + 1, 0, 0, 0);
+    }
+  }
+
+  // Calcular normales vs extra por semana (45h límite)
+  for (const claveSemana in semanas) {
+    const semana = semanas[claveSemana];
+    if (semana.horasTotales <= 45) {
+      semana.horasNormales = semana.horasTotales;
+      semana.horasExtra = 0;
+    } else {
+      semana.horasNormales = 45;
+      semana.horasExtra = semana.horasTotales - 45;
+    }
+  }
+
+  const totalHoras = Object.values(semanas).reduce((sum, s) => sum + s.horasTotales, 0);
+  const totalNormales = Object.values(semanas).reduce((sum, s) => sum + s.horasNormales, 0);
+  const totalExtra = Object.values(semanas).reduce((sum, s) => sum + s.horasExtra, 0);
+  const totalNocturnas = Object.values(semanas).reduce((sum, s) => sum + s.horasNocturnas, 0);
+
+  res.json({
+    operario,
+    planta: 'PTAR',
+    desde,
+    hasta,
+    totalHoras: Number(totalHoras.toFixed(2)),
+    horasNormales: Number(totalNormales.toFixed(2)),
+    horasExtra: Number(totalExtra.toFixed(2)),
+    horasDominicales: 0,
+    horasNocturnas: Number(totalNocturnas.toFixed(2)),
+    horasPermiso: Number(totalHorasPermiso.toFixed(2)),
+    detalleSemanas: Object.values(semanas),
+    detalleDias,
+  });
+}
+
+// ==================== RUTAS DE PERMISOS ====================
+
 app.post('/api/permisos', async (req, res) => {
   try {
-    const { nombreOperario, fechaPermiso, horasPermiso, motivo } = req.body;
+    const { nombreOperario, planta, fechaPermiso, horasPermiso, motivo } = req.body;
 
-    if (!nombreOperario || !fechaPermiso || !horasPermiso || !motivo) {
-      return res.status(400).json({
-        mensaje: 'Debes enviar nombreOperario, fechaPermiso, horasPermiso y motivo',
-      });
+    if (!nombreOperario || !planta || !fechaPermiso || !horasPermiso || !motivo) {
+      return res.status(400).json({ mensaje: 'Datos incompletos' });
     }
 
     const nuevoPermiso = new Permiso({
       nombreOperario,
+      planta,
       fechaPermiso,
       horasPermiso: parseFloat(horasPermiso),
       motivo,
@@ -429,7 +520,7 @@ app.post('/api/permisos', async (req, res) => {
     await nuevoPermiso.save();
 
     res.json({
-      mensaje: 'Permiso registrado correctamente',
+      mensaje: 'Permiso registrado',
       permiso: nuevoPermiso,
     });
   } catch (error) {
@@ -438,19 +529,17 @@ app.post('/api/permisos', async (req, res) => {
   }
 });
 
-// 10. Listar permisos por operario y rango
 app.get('/api/permisos', async (req, res) => {
   try {
-    const { operario, desde, hasta } = req.query;
+    const { operario, planta, desde, hasta } = req.query;
 
-    if (!operario || !desde || !hasta) {
-      return res.status(400).json({
-        mensaje: 'Debes enviar operario, desde y hasta',
-      });
+    if (!operario || !planta || !desde || !hasta) {
+      return res.status(400).json({ mensaje: 'Datos incompletos' });
     }
 
     const permisos = await Permiso.find({
       nombreOperario: operario,
+      planta,
       fechaPermiso: { $gte: desde, $lte: hasta },
     }).sort({ fechaPermiso: 1 });
 
@@ -461,7 +550,6 @@ app.get('/api/permisos', async (req, res) => {
   }
 });
 
-// 11. Eliminar permiso
 app.delete('/api/permisos/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -471,14 +559,14 @@ app.delete('/api/permisos/:id', async (req, res) => {
       return res.status(404).json({ mensaje: 'Permiso no encontrado' });
     }
 
-    res.json({ mensaje: 'Permiso eliminado correctamente' });
+    res.json({ mensaje: 'Permiso eliminado' });
   } catch (error) {
     console.error('Error al eliminar permiso:', error);
     res.status(500).json({ mensaje: 'Error al eliminar permiso' });
   }
 });
 
-// 12. Iniciar servidor
+// Iniciar servidor
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
