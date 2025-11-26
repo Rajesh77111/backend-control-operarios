@@ -139,6 +139,9 @@ app.post('/api/registro', async (req, res) => {
     }
 
     const ahora = new Date();
+        // Hora local de Colombia (America/Bogota, UTC-5)
+    const horaLocalColombia = (ahora.getUTCHours() + 24 - 5) % 24;
+
     const fechaDia = obtenerFechaDia(ahora);
 
     // Validar un solo registro por tipo por día
@@ -168,15 +171,15 @@ app.post('/api/registro', async (req, res) => {
       });
     }
 
-    // Validar justificación para PTAP (después de las 17:00)
+       // Validar justificación para PTAP (después de las 17:00 hora Colombia)
     if (planta === 'PTAP' && tipo === 'salida') {
-      const hora = ahora.getHours();
-      if (hora >= 17 && (!justificacionExtra || !justificacionExtra.trim())) {
+      if (horaLocalColombia >= 17 && (!justificacionExtra || !justificacionExtra.trim())) {
         return res.status(400).json({
-          mensaje: 'Salida después de las 17:00 requiere justificación',
+          mensaje: 'Salida después de las 17:00 (hora Colombia) requiere justificación',
         });
       }
     }
+
 
     // Determinar turno para PTAR
     const turno = planta === 'PTAR' ? determinarTurno(ahora.getHours()) : null;
@@ -571,3 +574,4 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
 });
+
