@@ -442,7 +442,7 @@ function calcularHorasPTAR(operario, desde, hasta, registros, totalHorasPermiso,
 
       const fechaTexto = obtenerFechaDia(inicioSegmento);
       const semana = obtenerSemana(inicioSegmento);
-      const claveSemanaSemana = `${obtenerFechaDia(semana.inicio)}_${obtenerFechaDia(semana.fin)}`;
+      const claveSemana = `${obtenerFechaDia(semana.inicio)}_${obtenerFechaDia(semana.fin)}`;
 
       if (!semanas[claveSemana]) {
         semanas[claveSemana] = {
@@ -574,4 +574,5 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
 });
+
 
