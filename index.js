@@ -6,7 +6,7 @@ require('dotenv').config();
 
 const app = express();
 
-// Middleware para que acepte JSON y permita peticiones desde tu página
+// Middleware
 app.use(express.json());
 app.use(cors());
 
@@ -16,7 +16,7 @@ mongoose
   .then(() => console.log('✅ Conectado a MongoDB Atlas'))
   .catch((err) => console.error('❌ Error al conectar a MongoDB:', err));
 
-// 2. Definir el modelo (cómo se guarda un registro de operario)
+// 2. Schema de Registro (con justificación de horas extra)
 const registroSchema = new mongoose.Schema({
   nombreOperario: { type: String, required: true },
   tipo: { type: String, enum: ['ingreso', 'salida'], required: true },
@@ -24,39 +24,41 @@ const registroSchema = new mongoose.Schema({
   lng: Number,
   dentroZona: Boolean,
   creadoEn: { type: Date, default: Date.now },
-  fechaDia: { type: String }, // ej: "2025-11-24"
-  distancia: { type: String }, // opcional, solo informativo
-  esExtra: { type: Boolean, default: false },
-  justificacionExtra: { type: String },
+  fechaDia: { type: String }, // "2025-11-24"
+  distancia: { type: String },
+  justificacionExtra: { type: String }, // Nueva: justificación de horas extra
 });
-
-
-// Antes de guardar, rellenamos fechaDia con YYYY-MM-DD (hora local)
-
 
 const Registro = mongoose.model('Registro', registroSchema);
 
-// 3. Función para calcular distancia entre dos puntos (en metros)
-function distanciaMetros(lat1, lng1, lat2, lng2) {
-  const R = 6371000; // radio de la Tierra en metros
-  const toRad = (grado) => (grado * Math.PI) / 180;
+// 3. Schema de Permisos (NUEVO)
+const permisoSchema = new mongoose.Schema({
+  nombreOperario: { type: String, required: true },
+  fechaPermiso: { type: String, required: true }, // "2025-11-24"
+  horasPermiso: { type: Number, required: true },
+  motivo: { type: String, required: true },
+  creadoEn: { type: Date, default: Date.now },
+});
 
+const Permiso = mongoose.model('Permiso', permisoSchema);
+
+// 4. Función de distancia
+function distanciaMetros(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = (grado) => (grado * Math.PI) / 180;
   const dLat = toRad(lat2 - lat1);
   const dLng = toRad(lng2 - lng1);
-
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos(toRad(lat1)) *
       Math.cos(toRad(lat2)) *
       Math.sin(dLng / 2) *
       Math.sin(dLng / 2);
-
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
   return R * c;
 }
 
-// 4. Ruta para registrar ingreso o salida
+// 5. Ruta para registrar ingreso o salida (MEJORADA)
 app.post('/api/registro', async (req, res) => {
   try {
     const { nombreOperario, tipo, lat, lng, justificacionExtra } = req.body;
@@ -65,21 +67,20 @@ app.post('/api/registro', async (req, res) => {
       return res.status(400).json({ mensaje: 'Faltan datos obligatorios' });
     }
 
-    // Validar que se envíen coordenadas
     if (lat == null || lng == null) {
       return res.status(400).json({
         mensaje: 'Se requiere ubicación GPS para registrar',
       });
     }
 
-    // === 1) Obtener la fecha del día (YYYY-MM-DD) ===
+    // Fecha del día
     const ahora = new Date();
     const año = ahora.getFullYear();
     const mes = String(ahora.getMonth() + 1).padStart(2, '0');
     const dia = String(ahora.getDate()).padStart(2, '0');
     const fechaDia = `${año}-${mes}-${dia}`;
 
-    // === 2) Verificar si ya registró este tipo hoy ===
+    // ⚠️ VALIDACIÓN: Solo un registro de cada tipo por día
     const yaExiste = await Registro.findOne({
       nombreOperario,
       tipo,
@@ -88,11 +89,11 @@ app.post('/api/registro', async (req, res) => {
 
     if (yaExiste) {
       return res.status(400).json({
-        mensaje: `Ya registraste un ${tipo} hoy (${fechaDia}) para ${nombreOperario}.`,
+        mensaje: `Ya registraste un ${tipo} hoy (${fechaDia}). Solo puedes registrar ${tipo} una vez por día.`,
       });
     }
 
-    // Obtener coordenadas de la zona desde variables de entorno
+    // Validar zona
     const ZONA_LAT = parseFloat(process.env.ZONA_LAT);
     const ZONA_LNG = parseFloat(process.env.ZONA_LNG);
     const ZONA_RADIO_METROS = parseFloat(process.env.ZONA_RADIO_METROS || '35');
@@ -110,14 +111,10 @@ app.post('/api/registro', async (req, res) => {
       });
     }
 
-    // === 3) Determinar si esta salida es hora extra (después de las 17:00) ===
-    let esExtra = false;
+    // ⚠️ VALIDACIÓN: Si es salida después de las 17:00, exigir justificación
     if (tipo === 'salida') {
-      const horaLocal = ahora.getHours(); // OJO: depende de la zona horaria del servidor
+      const horaLocal = ahora.getHours();
       if (horaLocal >= 17) {
-        esExtra = true;
-
-        // Si es extra y no mandaron justificación, no dejamos guardar
         if (!justificacionExtra || !justificacionExtra.trim()) {
           return res.status(400).json({
             mensaje:
@@ -127,7 +124,7 @@ app.post('/api/registro', async (req, res) => {
       }
     }
 
-    // Guardamos el registro con la hora del servidor
+    // Guardar registro
     const nuevoRegistro = new Registro({
       nombreOperario,
       tipo,
@@ -136,8 +133,7 @@ app.post('/api/registro', async (req, res) => {
       dentroZona,
       distancia: distancia.toFixed(0),
       fechaDia,
-      esExtra,
-      justificacionExtra: esExtra ? justificacionExtra : undefined,
+      justificacionExtra: justificacionExtra || undefined,
     });
 
     await nuevoRegistro.save();
@@ -154,78 +150,31 @@ app.post('/api/registro', async (req, res) => {
   }
 });
 
-
-    // Obtener coordenadas de la zona desde variables de entorno
-    const ZONA_LAT = parseFloat(process.env.ZONA_LAT);
-    const ZONA_LNG = parseFloat(process.env.ZONA_LNG);
-    const ZONA_RADIO_METROS = parseFloat(process.env.ZONA_RADIO_METROS || '35');
-
-    // Calcular distancia
-    const distancia = distanciaMetros(lat, lng, ZONA_LAT, ZONA_LNG);
-    const dentroZona = distancia <= ZONA_RADIO_METROS;
-
-    // ⚠️ VALIDACIÓN ACTIVADA: Bloquear registros fuera de la planta
-    if (!dentroZona) {
-      return res.status(403).json({
-        mensaje: `No estás dentro de la zona de trabajo autorizada. Distancia: ${distancia.toFixed(0)} metros (máximo: ${ZONA_RADIO_METROS}m)`,
-        dentroZona: false,
-        distancia: distancia.toFixed(0),
-      });
-    }
-
-    // Guardamos el registro con la hora del servidor
-    const nuevoRegistro = new Registro({
-      nombreOperario,
-      tipo,
-      lat,
-      lng,
-      dentroZona,
-      distancia: distancia.toFixed(0),
-    });
-
-    await nuevoRegistro.save();
-
-    res.json({
-      mensaje: `Registro de ${tipo} guardado correctamente para ${nombreOperario}`,
-      dentroZona,
-      distancia: distancia.toFixed(0),
-      registro: nuevoRegistro,
-    });
-  } catch (error) {
-    console.error('Error al guardar registro:', error);
-    res.status(500).json({ mensaje: 'Error en el servidor' });
-  }
-});
-
-// 5. Ruta para ver registros (por ahora simple)
+// 6. Ver registros
 app.get('/api/registros', async (req, res) => {
   const registros = await Registro.find().sort({ creadoEn: -1 }).limit(100);
   res.json(registros);
 });
-// 6. Eliminar registros por operario y rango de fechas
+
+// 7. Eliminar registros por rango
 app.delete('/api/registros-rango', async (req, res) => {
   try {
     const { operario, desde, hasta } = req.body;
 
-    // Validar que llegaron los datos básicos
     if (!operario || !desde || !hasta) {
       return res
         .status(400)
         .json({ mensaje: 'Debes enviar operario, desde y hasta (YYYY-MM-DD)' });
     }
 
-    // Construir los límites de fecha
-    // Ej: desde = "2025-11-01", hasta = "2025-11-07"
     const inicio = new Date(`${desde}T00:00:00`);
     const fin = new Date(`${hasta}T23:59:59`);
 
-    // Filtro: nombre + rango de fechas usando el campo creadoEn
     const filtro = {
       nombreOperario: operario,
       creadoEn: { $gte: inicio, $lte: fin },
     };
 
-    // deleteMany devuelve cuántos documentos borró
     const resultado = await Registro.deleteMany(filtro);
 
     res.json({
@@ -241,7 +190,7 @@ app.delete('/api/registros-rango', async (req, res) => {
   }
 });
 
-// 6. Ruta de reporte de horas por operario y rango de fechas
+// 8. Reporte de horas con descuento de permisos (MEJORADO)
 app.get('/api/reporte-horas', async (req, res) => {
   try {
     const { operario, desde, hasta } = req.query;
@@ -252,15 +201,22 @@ app.get('/api/reporte-horas', async (req, res) => {
         .json({ mensaje: 'Debes enviar operario, desde y hasta (YYYY-MM-DD)' });
     }
 
-    // Construimos las fechas de inicio y fin
     const inicio = new Date(`${desde}T00:00:00`);
     const fin = new Date(`${hasta}T23:59:59`);
 
-    // 1. Traer registros del operario en ese rango
+    // 1. Traer registros
     const registros = await Registro.find({
       nombreOperario: operario,
       creadoEn: { $gte: inicio, $lte: fin },
     }).sort({ creadoEn: 1 });
+
+    // 2. Traer permisos en el mismo rango
+    const permisos = await Permiso.find({
+      nombreOperario: operario,
+      fechaPermiso: { $gte: desde, $lte: hasta },
+    });
+
+    const totalHorasPermiso = permisos.reduce((sum, p) => sum + p.horasPermiso, 0);
 
     if (registros.length === 0) {
       return res.json({
@@ -271,11 +227,12 @@ app.get('/api/reporte-horas', async (req, res) => {
         horasNormales: 0,
         horasExtra: 0,
         horasDominicales: 0,
+        horasPermiso: totalHorasPermiso,
         detalle: [],
       });
     }
 
-    // 2. Armar pares ingreso–salida
+    // 3. Armar intervalos ingreso-salida
     const intervalos = [];
     let ultimoIngreso = null;
 
@@ -283,7 +240,6 @@ app.get('/api/reporte-horas', async (req, res) => {
       if (reg.tipo === 'ingreso') {
         ultimoIngreso = reg.creadoEn;
       } else if (reg.tipo === 'salida' && ultimoIngreso) {
-        // Creamos intervalo [ingreso, salida]
         intervalos.push({
           inicio: new Date(ultimoIngreso),
           fin: new Date(reg.creadoEn),
@@ -292,7 +248,7 @@ app.get('/api/reporte-horas', async (req, res) => {
       }
     }
 
-    // 3. Funciones auxiliares para calcular horas en bloques
+    // 4. Calcular horas por bloques
     function horasEntre(fechaInicio, fechaFin) {
       const ms = fechaFin - fechaInicio;
       return ms > 0 ? ms / (1000 * 60 * 60) : 0;
@@ -306,11 +262,9 @@ app.get('/api/reporte-horas', async (req, res) => {
     }
 
     function esDomingo(d) {
-      // 0 = domingo, 1 = lunes, ... 6 = sábado
       return d.getDay() === 0;
     }
 
-    // Dado un intervalo, lo partimos por día y calculamos horas
     let horasNormales = 0;
     let horasExtra = 0;
     let horasDominicales = 0;
@@ -320,7 +274,6 @@ app.get('/api/reporte-horas', async (req, res) => {
       let actual = new Date(intervalo.inicio);
 
       while (actual < intervalo.fin) {
-        // Tomamos el día de este "trozo"
         const inicioDia = new Date(
           actual.getFullYear(),
           actual.getMonth(),
@@ -344,7 +297,7 @@ app.get('/api/reporte-horas', async (req, res) => {
         const fechaTexto = mismoDia(inicioSegmento);
         const domingo = esDomingo(inicioSegmento);
 
-        // Definir bloques de ese día
+        // Bloques
         const bloqueManianaInicio = new Date(
           inicioSegmento.getFullYear(),
           inicioSegmento.getMonth(),
@@ -387,9 +340,8 @@ app.get('/api/reporte-horas', async (req, res) => {
           0,
           0
         );
-        const bloqueExtraFin = finDia; // todo lo que pase de las 17:00
+        const bloqueExtraFin = finDia;
 
-        // Intersecciones con cada bloque
         function interseccion(inicioBloque, finBloque) {
           const ini = new Date(Math.max(inicioSegmento, inicioBloque));
           const fin = new Date(Math.min(finSegmento, finBloque));
@@ -397,17 +349,13 @@ app.get('/api/reporte-horas', async (req, res) => {
           return horasEntre(ini, fin);
         }
 
-        const horasManiana = interseccion(
-          bloqueManianaInicio,
-          bloqueManianaFin
-        );
+        const horasManiana = interseccion(bloqueManianaInicio, bloqueManianaFin);
         const horasTarde = interseccion(bloqueTardeInicio, bloqueTardeFin);
         const horasExtraDia = interseccion(bloqueExtraInicio, bloqueExtraFin);
 
         let horasNormalesDia = horasManiana + horasTarde;
 
         if (domingo) {
-          // Todo lo normal de ese día se considera dominical
           horasDominicales += horasNormalesDia + horasExtraDia;
           detalle.push({
             fecha: fechaTexto,
@@ -428,7 +376,6 @@ app.get('/api/reporte-horas', async (req, res) => {
           });
         }
 
-        // Avanzamos al siguiente día
         actual = new Date(
           inicioSegmento.getFullYear(),
           inicioSegmento.getMonth(),
@@ -450,6 +397,7 @@ app.get('/api/reporte-horas', async (req, res) => {
       horasNormales: Number(horasNormales.toFixed(2)),
       horasExtra: Number(horasExtra.toFixed(2)),
       horasDominicales: Number(horasDominicales.toFixed(2)),
+      horasPermiso: Number(totalHorasPermiso.toFixed(2)),
       detalle,
     });
   } catch (error) {
@@ -458,19 +406,80 @@ app.get('/api/reporte-horas', async (req, res) => {
   }
 });
 
-// 6. Iniciar el servidor
+// ========== NUEVAS RUTAS PARA PERMISOS ==========
+
+// 9. Crear permiso
+app.post('/api/permisos', async (req, res) => {
+  try {
+    const { nombreOperario, fechaPermiso, horasPermiso, motivo } = req.body;
+
+    if (!nombreOperario || !fechaPermiso || !horasPermiso || !motivo) {
+      return res.status(400).json({
+        mensaje: 'Debes enviar nombreOperario, fechaPermiso, horasPermiso y motivo',
+      });
+    }
+
+    const nuevoPermiso = new Permiso({
+      nombreOperario,
+      fechaPermiso,
+      horasPermiso: parseFloat(horasPermiso),
+      motivo,
+    });
+
+    await nuevoPermiso.save();
+
+    res.json({
+      mensaje: 'Permiso registrado correctamente',
+      permiso: nuevoPermiso,
+    });
+  } catch (error) {
+    console.error('Error al crear permiso:', error);
+    res.status(500).json({ mensaje: 'Error al registrar permiso' });
+  }
+});
+
+// 10. Listar permisos por operario y rango
+app.get('/api/permisos', async (req, res) => {
+  try {
+    const { operario, desde, hasta } = req.query;
+
+    if (!operario || !desde || !hasta) {
+      return res.status(400).json({
+        mensaje: 'Debes enviar operario, desde y hasta',
+      });
+    }
+
+    const permisos = await Permiso.find({
+      nombreOperario: operario,
+      fechaPermiso: { $gte: desde, $lte: hasta },
+    }).sort({ fechaPermiso: 1 });
+
+    res.json(permisos);
+  } catch (error) {
+    console.error('Error al listar permisos:', error);
+    res.status(500).json({ mensaje: 'Error al listar permisos' });
+  }
+});
+
+// 11. Eliminar permiso
+app.delete('/api/permisos/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const resultado = await Permiso.findByIdAndDelete(id);
+
+    if (!resultado) {
+      return res.status(404).json({ mensaje: 'Permiso no encontrado' });
+    }
+
+    res.json({ mensaje: 'Permiso eliminado correctamente' });
+  } catch (error) {
+    console.error('Error al eliminar permiso:', error);
+    res.status(500).json({ mensaje: 'Error al eliminar permiso' });
+  }
+});
+
+// 12. Iniciar servidor
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
 });
-
-
-
-
-
-
-
-
-
-
-
