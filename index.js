@@ -331,11 +331,11 @@ function calcularHorasPTAP(operario, desde, hasta, registros, totalHorasPermiso,
       const fechaTexto = obtenerFechaDia(inicioSegmento);
       const domingo = esDomingo(inicioSegmento);
 
-      const bloqueManianaInicio = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate(), 7, 0, 0);
-      const bloqueManianaFin = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate(), 12, 0, 0);
-      const bloqueTardeInicio = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate(), 14, 0, 0);
-      const bloqueTardeFin = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate(), 17, 0, 0);
-      const bloqueExtraInicio = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate(), 17, 0, 0);
+      const bloqueManianaInicio = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate(), 12, 0, 0);
+      const bloqueManianaFin = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate(), 17, 0, 0);
+      const bloqueTardeInicio = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate(), 19, 0, 0);
+      const bloqueTardeFin = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate(), 22, 0, 0);
+      const bloqueExtraInicio = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate(), 22, 0, 0);
 
       function interseccion(inicioBloque, finBloque) {
         const ini = new Date(Math.max(inicioSegmento, inicioBloque));
@@ -604,6 +604,7 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
 });
+
 
 
 
