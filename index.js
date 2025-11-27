@@ -425,20 +425,50 @@ function calcularHorasPTAR(operario, desde, hasta, registros, totalHorasPermiso,
       const inicioSegmento = new Date(Math.max(actual, inicioDia));
       const finSegmento = new Date(Math.min(intervalo.fin, finDia));
 
-      const horasDelDia = (finSegmento - inicioSegmento) / (1000 * 60 * 60);
+           const horasDelDia = (finSegmento - inicioSegmento) / (1000 * 60 * 60);
 
-      // Calcular horas nocturnas (19:00 - 06:00)
-      const inicio19h = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate(), 19, 0, 0);
-      const fin6hSiguiente = new Date(inicioSegmento.getFullYear(), inicioSegmento.getMonth(), inicioSegmento.getDate() + 1, 6, 0, 0);
+      // === CÁLCULO DE HORAS NOCTURNAS EN HORA COLOMBIA (19:00 - 06:00) ===
+
+      // 1) Convertimos el intervalo a hora local de Colombia
+      const inicioLocal = aFechaColombia(inicioSegmento);
+      const finLocal = aFechaColombia(finSegmento);
+
+      // 2) Definimos la ventana nocturna local:
+      //    desde las 19:00 del "día local" hasta las 06:00 del día siguiente.
+      const inicio19hLocal = new Date(
+        inicioLocal.getFullYear(),
+        inicioLocal.getMonth(),
+        inicioLocal.getDate(),
+        19, 0, 0
+      );
+      const fin6hSiguienteLocal = new Date(
+        inicioLocal.getFullYear(),
+        inicioLocal.getMonth(),
+        inicioLocal.getDate() + 1,
+        6, 0, 0
+      );
 
       let horasNocturnas = 0;
-      
-      // Si el segmento cruza las 19:00
-      if (finSegmento > inicio19h && inicioSegmento < fin6hSiguiente) {
-        const inicioNocturno = new Date(Math.max(inicioSegmento, inicio19h));
-        const finNocturno = new Date(Math.min(finSegmento, fin6hSiguiente));
-        horasNocturnas = Math.max(0, (finNocturno - inicioNocturno) / (1000 * 60 * 60));
+
+      // 3) Si el intervalo local se cruza con la franja nocturna local,
+      //    calculamos la intersección.
+      if (finLocal > inicio19hLocal && inicioLocal < fin6hSiguienteLocal) {
+        const inicioNocturnoLocal = new Date(Math.max(inicioLocal, inicio19hLocal));
+        const finNocturnoLocal = new Date(Math.min(finLocal, fin6hSiguienteLocal));
+
+        horasNocturnas = Math.max(
+          0,
+          (finNocturnoLocal - inicioNocturnoLocal) / (1000 * 60 * 60)
+        );
       }
+
+      
+// Convierte una fecha "real" a hora local de Colombia restando 5 horas.
+// Ojo: solo la usamos para cálculos de franjas horarias.
+function aFechaColombia(date) {
+  const offsetMs = 5 * 60 * 60 * 1000; // 5 horas en milisegundos
+  return new Date(date.getTime() - offsetMs);
+}
 
       const fechaTexto = obtenerFechaDia(inicioSegmento);
       const semana = obtenerSemana(inicioSegmento);
@@ -574,5 +604,6 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
 });
+
 
 
